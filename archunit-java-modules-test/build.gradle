@@ -1,0 +1,21 @@
+plugins {
+    id 'archunit.java-conventions'
+    id 'org.javamodularity.moduleplugin' version '2.0.1'
+}
+
+ext.moduleName = 'com.tngtech.archunit.javamodulestest'
+
+ext.minimumJavaVersion = JavaVersion.VERSION_1_9
+
+dependencies {
+    testImplementation project(path: ':archunit', configuration: 'shadow')
+}
+
+def addArchUnitModuleOptions = {
+    moduleOptions {
+        addModules = ['com.tngtech.archunit']
+        addReads = ['example_module': 'com.tngtech.archunit']
+    }
+}
+
+[compileTestJava, test]*.with(addArchUnitModuleOptions)

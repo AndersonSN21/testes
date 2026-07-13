@@ -1,0 +1,266 @@
+plugins {
+    id 'archunit.java-conventions'
+}
+
+import org.gradle.internal.os.OperatingSystem
+
+import java.nio.file.Files
+
+JavaVersion integrationTestJavaVersion = configuredTestJavaVersion ?: maxSupportedJavaVersion
+def compiler = javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(integrationTestJavaVersion.majorVersion) }
+String jdkHome = compiler.get().metadata.installationPath.asFile.absolutePath
+
+def repositoryUrls = [
+        tng     : [
+                snapshots: 'https://nexus.int.tngtech.com/repository/maven-snapshots',
+                releases : 'https://nexus.int.tngtech.com/repository/maven-releases'
+        ],
+        sonatype: [
+                snapshots: 'https://central.sonatype.com/repository/maven-snapshots',
+                releases : 'https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/'
+        ]
+]
+def createRepositoriesTag = { repoUrls ->
+    """
+    <repositories>
+        <repository>
+            <id>snapshots</id>
+            <name>Snapshots</name>
+            <url>${repoUrls.snapshots}</url>
+        </repository>
+        <repository>
+            <id>releases</id>
+            <name>Releases</name>
+            <url>${repoUrls.releases}</url>
+        </repository>
+    </repositories>
+"""
+}
+def createPluginRepositoriesTag = { repoUrls ->
+    """
+    <pluginRepositories>
+        <pluginRepository>
+            <id>snapshots</id>
+            <name>Snapshots</name>
+            <url>${repoUrls.snapshots}</url>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+        </pluginRepository>
+        <pluginRepository>
+            <id>releases</id>
+            <name>Releases</name>
+            <url>${repoUrls.releases}</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+        </pluginRepository>
+    </pluginRepositories>
+"""
+}
+def createAllRepositoryTags = { repoUrls ->
+    """
+${createRepositoriesTag(repoUrls)}
+${createPluginRepositoriesTag(repoUrls)}
+"""
+}
+
+def getRepoUrls = {
+    def repoUrls = repositoryUrls.get(it)
+    assert repoUrls: "The configured -PmavenRepos=${it} don't exist"
+    repoUrls
+}
+
+File mavenSrc = new File(projectDir, 'src')
+File mavenTarget = new File(projectDir, 'target')
+File mavenPomTemplate = new File(projectDir, 'pom.xml.template')
+File mavenPom = new File(projectDir, 'pom.xml')
+File verificationTestPath = new File(projectDir, 'verification/TestResultTest.java')
+File verificationResultOriginPath = new File(projectDir, 'target/surefire-reports')
+File verificationResultArchivePath = new File(projectDir, 'verification-results')
+
+clean {
+    doLast {
+        verificationResultArchivePath.deleteDir()
+    }
+}
+
+task initializeMavenTest {
+    doLast {
+        verificationResultArchivePath.with {
+            deleteDir()
+            assert mkdir(): "Couldn't create directory ${delegate}"
+        }
+    }
+}
+
+def mavenCommand = { String... params ->
+    def allParams = ['--batch-mode', '--no-transfer-progress'] + params.toList()
+    OperatingSystem.current().isWindows() ?
+            ['cmd', '/c', 'mvnw.cmd'] + allParams :
+            ['./mvnw'] + allParams
+}
+
+def addMavenTest = { IntegrationTestConfig config ->
+    String prepareMavenTest = "prepareMavenTest${config.suffix}"
+    String executeRules = "executeRules${config.suffix}"
+    String verifyRules = "verifyRules${config.suffix}"
+    String cleanUpMavenTest = "cleanUpMavenTest${config.suffix}"
+    String runMavenTest = "runMavenTest${config.suffix}"
+
+    return {
+        tasks.create(name: prepareMavenTest, dependsOn: initializeMavenTest) {
+            doLast {
+                mavenPom.delete()
+                Files.copy(mavenPomTemplate.toPath(), mavenPom.toPath())
+
+                def repositories = project.hasProperty('mavenRepos') ?
+                        createAllRepositoryTags(getRepoUrls(project.getProperty('mavenRepos'))) :
+                        ''
+
+                mavenPom.text = mavenPom.text
+                                        .replace('#{archunit.version}', "${version}")
+                                        .replace('#{archunitTestArtifact}', config.archunitTestArtifact)
+                                        .replace('#{repositories}', repositories)
+                                        .replace('#{javaVersion}', "${config.javaVersion}")
+                                        .replace('#{additionalDependencies}', config.additionalDependencies ?: '')
+                                        .replace('#{surefireExampleConfiguration}', config.surefireExampleConfiguration)
+                                        .replaceAll(/#\{(libs|exampleLibs).([^}:]+):?([^}]*)}/) { all, catalog, dependencyReference, scope ->
+                                                def versionCatalog = versionCatalogs.named(catalog)
+                                                def targetDependency = versionCatalog.findLibrary(dependencyReference).get().get()
+                                                def scopePart = scope ? "\n            <scope>${scope}</scope>" : ''
+                                                """
+                                                |        <dependency>
+                                                |            <groupId>${targetDependency.group}</groupId>
+                                                |            <artifactId>${targetDependency.name}</artifactId>
+                                                |            <version>${targetDependency.version}</version>${scopePart}
+                                                |        </dependency>""".stripMargin().trim()
+                                        }
+
+                copy {
+                    from new File(new File(project(':archunit-example:example-plain').projectDir, 'src'), 'main')
+                    into new File(mavenSrc, 'main')
+                }
+                copy {
+                    from new File(new File(project(":archunit-example:example-${config.identifier}").projectDir, 'src'), 'test')
+                    into new File(mavenSrc, 'test')
+                }
+                copy {
+                    from verificationTestPath
+                    into new File(mavenSrc, 'test/java')
+                }
+            }
+        }
+
+        def mavenExec = { closure ->
+            return {
+                workingDir projectDir
+                environment JAVA_HOME: jdkHome
+                delegate.with(closure)
+            }
+        }
+
+        tasks.create(name: executeRules, type: Exec, dependsOn: prepareMavenTest).configure mavenExec {
+            commandLine mavenCommand('clean', 'test', '-P', 'execute-rules')
+        }
+
+        tasks.create(name: verifyRules, type: Exec, dependsOn: executeRules).configure mavenExec {
+            commandLine mavenCommand('surefire:test', '-P', 'verify-rules')
+        }
+
+        tasks.create(name: cleanUpMavenTest) {
+            doFirst {
+                copy {
+                    from verificationResultOriginPath
+                    include '**/*.xml'
+                    into new File(verificationResultArchivePath, "${config.identifier}")
+                }
+            }
+            doLast {
+                mavenPom.delete()
+                mavenSrc.deleteDir()
+                mavenTarget.deleteDir()
+            }
+        }
+
+        // Run cleanUp even if task fails
+        [tasks[prepareMavenTest], tasks[verifyRules], tasks[executeRules]]*.finalizedBy tasks[cleanUpMavenTest]
+
+        tasks.create(name: runMavenTest, dependsOn: [prepareMavenTest, executeRules, verifyRules, cleanUpMavenTest])
+
+        def executeRulesTask = tasks[executeRules]
+        gradle.projectsEvaluated {
+            def publishTasks = allprojects
+                    .findAll { it.findProperty('isReleaseProject') }
+                    .collectMany { [it.publish, it.publishToMavenLocal] }
+            executeRulesTask.mustRunAfter(*publishTasks)
+        }
+    }
+}
+
+List<IntegrationTestConfig> integrationTestConfigs = [
+        new IntegrationTestConfig(
+                javaVersion: integrationTestJavaVersion,
+                testType: TestType.PLAIN,
+                surefireExampleConfiguration: '<groups>com.tngtech.archunit.exampletest.Example</groups>',
+                archunitTestArtifact: 'archunit'
+        ),
+        new IntegrationTestConfig(
+                javaVersion: integrationTestJavaVersion,
+                testType: TestType.JUNIT4,
+                surefireExampleConfiguration: '<groups>com.tngtech.archunit.exampletest.junit4.Example</groups>',
+                archunitTestArtifact: 'archunit-junit4'
+        )
+]
+
+def vintageEngine = libs.junit5VintageEngine.get()
+integrationTestConfigs << new IntegrationTestConfig(
+        javaVersion: integrationTestJavaVersion,
+        testType: TestType.JUNIT5,
+        surefireExampleConfiguration: '<groups>example</groups>',
+        archunitTestArtifact: 'archunit-junit5',
+        additionalDependencies: """
+            <dependency>
+                <groupId>${vintageEngine.group}</groupId>
+                <artifactId>${vintageEngine.name}</artifactId>
+                <version>${vintageEngine.version}</version>
+                <scope>test</scope>
+            </dependency>"""
+)
+
+integrationTestConfigs.each { config -> project.with(addMavenTest(config)) }
+
+def suffixes = integrationTestConfigs*.suffix.sort()
+[suffixes, suffixes.tail()].transpose().each { twoConsecutiveSuffixes ->
+    tasks["prepareMavenTest${twoConsecutiveSuffixes[1]}"].mustRunAfter(tasks["cleanUpMavenTest${twoConsecutiveSuffixes[0]}"])
+}
+
+task runMavenTest
+tasks.findAll { it.name ==~ /^runMavenTest.+/ }.each { runMavenTest.dependsOn it }
+tasks.findAll { it.name ==~ /.*MavenTest.+/ }.each {
+    it.doFirst {
+        println "Running Maven Integration Test with JDK ${integrationTestJavaVersion} located at ${jdkHome}"
+    }
+}
+
+class IntegrationTestConfig {
+    TestType testType
+    JavaVersion javaVersion
+    String surefireExampleConfiguration
+    String archunitTestArtifact
+    String additionalDependencies = ''
+
+    String getIdentifier() {
+        return testType.name().toLowerCase()
+    }
+
+    String getSuffix() {
+        testType.name().toLowerCase().capitalize()
+    }
+}
+
+enum TestType {
+    PLAIN,
+    JUNIT4,
+    JUNIT5
+}

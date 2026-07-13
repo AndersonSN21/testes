@@ -1,0 +1,266 @@
+/*
+ * Copyright 2014-2026 TNG Technology Consulting GmbH
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package com.tngtech.archunit.lang;
+
+import java.util.Collection;
+import java.util.Optional;
+
+import com.google.common.collect.ImmutableList;
+import com.tngtech.archunit.Internal;
+import com.tngtech.archunit.PublicAPI;
+import com.tngtech.archunit.base.DescribedIterable;
+import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaClasses;
+import com.tngtech.archunit.core.domain.properties.CanOverrideDescription;
+import com.tngtech.archunit.lang.extension.ArchUnitExtensions;
+import com.tngtech.archunit.lang.extension.EvaluatedRule;
+import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
+import com.tngtech.archunit.lang.syntax.elements.ClassesShould;
+import com.tngtech.archunit.lang.syntax.elements.ClassesThat;
+import com.tngtech.archunit.lang.syntax.elements.GivenClasses;
+
+import static com.google.common.collect.Iterables.isEmpty;
+import static com.tngtech.archunit.PublicAPI.Usage.ACCESS;
+
+/**
+ * Represents a rule about a specified set of objects of interest (e.g. {@link JavaClass}).
+ * To define a rule, use one of the factory methods within {@link ArchRuleDefinition}, for example
+ * <br><br><pre><code>
+ * ArchRule rule = {@link ArchRuleDefinition#noClasses()}.{@link GivenClasses#that() that()}.{@link ClassesThat#resideInAPackage(String) resideInAPackage("..svc..")}
+ *                     .{@link GivenClasses#should() should()}.{@link ClassesShould#accessClassesThat() accessClassesThat()}.{@link ClassesThat#resideInAPackage(String) resideInAPackage("..ui..")};
+ * rule.check(importedJavaClasses);
+ * </code></pre>
+ * <br>
+ * To write rules on custom objects, you can use {@link ArchRuleDefinition#all(ClassesTransformer)}, where
+ * {@link ClassesTransformer} defines how the type of objects can be created from imported {@link JavaClasses}.
+ * E.g. if you want to define a rule on all imported methods you could specify a transformer to retrieve methods
+ * from classes, or if you're interested in slices of packages, the input transformer would specify how to transform
+ * the imported classes to those slices to run an {@link ArchCondition} against.
+ *
+ * @see com.tngtech.archunit.library.dependencies.Slices.Transformer
+ */
+@PublicAPI(usage = ACCESS)
+public interface ArchRule extends CanBeEvaluated, CanOverrideDescription<ArchRule> {
+    @PublicAPI(usage = ACCESS)
+    void check(JavaClasses classes);
+
+    @PublicAPI(usage = ACCESS)
+    ArchRule because(String reason);
+
+    /**
+     * If set to {@code true} allows the should-clause of this rule to be checked against an empty set of elements.
+     * Otherwise, the rule will fail with a respective message. This is to prevent possible implementation errors,
+     * like filtering for a non-existing package in the that-clause causing an always-passing rule.<br>
+     * Note that this method will override the configuration property {@code archRule.failOnEmptyShould}.
+     *
+     * @param allowEmptyShould Whether the rule fails if the should-clause is evaluated with an empty set of elements
+     * @return A (new) {@link ArchRule} with adjusted {@code allowEmptyShould} behavior
+     */
+    @PublicAPI(usage = ACCESS)
+    ArchRule allowEmptyShould(boolean allowEmptyShould);
+
+    @PublicAPI(usage = ACCESS)
+    final class Assertions {
+        private static final ArchUnitExtensions extensions = new ArchUnitExtensions();
+
+        private Assertions() {
+        }
+
+        @PublicAPI(usage = ACCESS)
+        public static void check(ArchRule rule, JavaClasses classes) {
+            EvaluationResult result = rule.evaluate(classes);
+            extensions.dispatch(new SimpleEvaluatedRule(rule, classes, result));
+            assertNoViolation(result);
+        }
+
+        @PublicAPI(usage = ACCESS)
+        public static void assertNoViolation(EvaluationResult result) {
+            FailureReport report = result.getFailureReport();
+
+            if (!report.isEmpty()) {
+                throw new AssertionError(report.toString());
+            }
+        }
+
+        private static class SimpleEvaluatedRule implements EvaluatedRule {
+            private final ArchRule rule;
+            private final JavaClasses importedClasses;
+            private final EvaluationResult evaluationResult;
+
+            SimpleEvaluatedRule(ArchRule rule, JavaClasses importedClasses, EvaluationResult evaluationResult) {
+                this.rule = rule;
+                this.importedClasses = importedClasses;
+                this.evaluationResult = evaluationResult;
+            }
+
+            @Override
+            public ArchRule getRule() {
+                return rule;
+            }
+
+            @Override
+            public JavaClasses getClasses() {
+                return importedClasses;
+            }
+
+            @Override
+            public EvaluationResult getResult() {
+                return evaluationResult;
+            }
+        }
+    }
+
+    @Internal
+    class Factory {
+        public static <T> ArchRule create(ClassesTransformer<T> classesTransformer, ArchCondition<T> condition, Priority priority) {
+            return new SimpleArchRule<>(priority, classesTransformer, condition, Optional.empty(), AllowEmptyShould.AS_CONFIGURED);
+        }
+
+        public static ArchRule withBecause(ArchRule rule, String reason) {
+            return rule.as(createBecauseDescription(rule, reason));
+        }
+
+        static String createBecauseDescription(ArchRule rule, String reason) {
+            return rule.getDescription() + ", because " + reason;
+        }
+
+        private static class SimpleArchRule<T> implements ArchRule {
+            private static final String FAIL_ON_EMPTY_SHOULD_PROPERTY_NAME = "archRule.failOnEmptyShould";
+
+            private final Priority priority;
+            private final ClassesTransformer<T> classesTransformer;
+            private final ArchCondition<T> condition;
+            private final Optional<String> overriddenDescription;
+            private final AllowEmptyShould allowEmptyShould;
+
+            private SimpleArchRule(Priority priority, ClassesTransformer<T> classesTransformer, ArchCondition<T> condition,
+                    Optional<String> overriddenDescription, AllowEmptyShould allowEmptyShould) {
+                this.priority = priority;
+                this.classesTransformer = classesTransformer;
+                this.condition = condition;
+                this.overriddenDescription = overriddenDescription;
+                this.allowEmptyShould = allowEmptyShould;
+            }
+
+            @Override
+            public ArchRule as(String newDescription) {
+                return new SimpleArchRule<>(priority, classesTransformer, condition, Optional.of(newDescription), allowEmptyShould);
+            }
+
+            @Override
+            public void check(JavaClasses classes) {
+                Assertions.check(this, classes);
+            }
+
+            @Override
+            public ArchRule because(String reason) {
+                return withBecause(this, reason);
+            }
+
+            @Override
+            public ArchRule allowEmptyShould(boolean allowEmptyShould) {
+                return new SimpleArchRule<>(priority, classesTransformer, condition, overriddenDescription, AllowEmptyShould.fromBoolean(allowEmptyShould));
+            }
+
+            @Override
+            public EvaluationResult evaluate(JavaClasses classes) {
+                Collection<T> allObjects = toCollection(classesTransformer.transform(classes));
+                verifyNoEmptyShouldIfEnabled(allObjects);
+
+                condition.init(allObjects);
+                ConditionEvents events = ConditionEvents.Factory.create();
+                for (T object : allObjects) {
+                    condition.check(object, events);
+                }
+                condition.finish(events);
+                return new EvaluationResult(this, events, priority);
+            }
+
+            @SuppressWarnings("unchecked")
+            private Collection<T> toCollection(DescribedIterable<T> iterable) {
+                return iterable instanceof Collection
+                        ? (Collection<T>) iterable
+                        : ImmutableList.copyOf(iterable);
+            }
+
+            private void verifyNoEmptyShouldIfEnabled(Iterable<T> allObjects) {
+                if (isEmpty(allObjects) && !allowEmptyShould.isAllowed()) {
+                    throw new AssertionError(String.format(
+                            "Rule '%s' failed to check any classes. "
+                                    + "This means either that no classes have been passed to the rule at all, "
+                                    + "or that no classes passed to the rule matched the `that()` clause. "
+                                    + "To allow rules being evaluated without checking any classes you can either "
+                                    + "use `%s.allowEmptyShould(true)` on a single rule or set the configuration property `%s = false` "
+                                    + "to change the behavior globally.",
+                            getDescription(), ArchRule.class.getSimpleName(), FAIL_ON_EMPTY_SHOULD_PROPERTY_NAME));
+                }
+            }
+
+            @Override
+            public String getDescription() {
+                return overriddenDescription.orElseGet(() -> classesTransformer.getDescription() + " should " + condition.getDescription());
+            }
+
+            @Override
+            public String toString() {
+                return getDescription();
+            }
+        }
+    }
+
+    @Internal
+    interface Transformation {
+        ArchRule apply(ArchRule rule);
+
+        @Internal
+        final class As implements Transformation {
+            private final String description;
+
+            public As(String description) {
+                this.description = description;
+            }
+
+            @Override
+            public ArchRule apply(ArchRule rule) {
+                return rule.as(description);
+            }
+
+            @Override
+            public String toString() {
+                return String.format("as '%s'", description);
+            }
+        }
+
+        @Internal
+        final class Because implements Transformation {
+            private final String reason;
+
+            public Because(String reason) {
+                this.reason = reason;
+            }
+
+            @Override
+            public ArchRule apply(ArchRule rule) {
+                return rule.because(reason);
+            }
+
+            @Override
+            public String toString() {
+                return String.format("because '%s'", reason);
+            }
+        }
+    }
+}

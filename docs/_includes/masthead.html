@@ -1,0 +1,31 @@
+<div class="masthead">
+  <a href="https://github.com/TNG/ArchUnit" class="only-on-fullhd">
+    <img style="position: absolute; top: 0; right: 0; border: 0;" decoding="async" width="149" height="149" src="https://github.blog/wp-content/uploads/2008/12/forkme_right_gray_6d6d6d.png?resize=149%2C149" class="attachment-full size-full" alt="Fork me on GitHub" loading="lazy" data-recalc-dims="1">
+  </a>
+  <div class="masthead__inner-wrap">
+    <div class="masthead__menu">
+      <nav id="site-nav" class="greedy-nav">
+        <a class="site-title" href="{{ '/' | absolute_url }}"><img src="/assets/ArchUnit-Logo.png" style="height:32px;" alt="{{ site.title }}"/></a>
+        <ul class="visible-links">
+          {% for link in site.data.navigation.main %}
+            {% if link.url contains 'http' %}
+              {% assign domain = '' %}
+            {% else %}
+              {% assign domain = site.url | append: site.baseurl %}
+            {% endif %}
+
+            {% if link.url == page.url %}
+              {% assign cssClass = 'masthead__menu-item active_tab' %}
+            {% else %}
+              {% assign cssClass = 'masthead__menu-item' %}
+            {% endif %}
+
+            <li class="{{ cssClass }}"><a href="{{ domain }}{{ link.url }}">{{ link.title }}</a></li>
+          {% endfor %}
+        </ul>
+        <button><div class="navicon"></div></button>
+        <ul class="hidden-links hidden"></ul>
+      </nav>
+    </div>
+  </div>
+</div>

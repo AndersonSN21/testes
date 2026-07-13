@@ -1,0 +1,98 @@
+plugins {
+    id 'archunit.java-production-conventions'
+}
+
+ext.moduleName = 'com.tngtech.archunit.junit'
+
+configurations {
+    archJunitApi
+    api.extendsFrom archJunitApi
+}
+
+sourceSets {
+    archJunitApi {
+        java {
+            srcDirs = ['src/api/java']
+        }
+        compileClasspath = configurations.archJunitApi
+    }
+}
+
+dependencies {
+    compileOnly sourceSets.archJunitApi.output
+    testImplementation sourceSets.archJunitApi.output
+}
+
+task apiJar(type: Jar) {
+    archiveFileName = jar.archiveFileName.get().replace(project.name, "${project.name}-api")
+    from sourceSets.archJunitApi.output
+}
+build.dependsOn apiJar
+
+artifacts {
+    archJunitApi apiJar
+}
+
+dependencies {
+    archJunitApi project(path: ':archunit', configuration: 'shadow')
+    dependency.addGuava { dependencyNotation, config -> implementation(dependencyNotation, config) }
+
+    testImplementation libs.junit4
+    testImplementation libs.junitDataprovider
+    testImplementation libs.mockito
+    testImplementation libs.assertj
+    testImplementation project(path: ':archunit', configuration: 'tests')
+
+    // This is a hack for running tests with IntelliJ instead of delegating to Gradle,
+    // because for some reason this dependency cannot be resolved otherwise :-(
+    testRuntimeOnly libs.asm
+}
+
+shadowJar {
+    exclude 'META-INF/**'
+
+    dependencies {
+        exclude(project(':archunit'))
+        exclude(dependency("${libs.guava.get()}"))
+        exclude(dependency("com.google.guava:failureaccess:.*"))
+    }
+}
+
+def addCleanThirdPartyTask = {
+    // These files are already relocated into archunit.jar, so they're transitively available
+    tasks.create(name: 'removeDuplicateThirdParty', type: Jar, dependsOn: shadowJar) {
+        exclude "${thirdPartyRelocationPackage.replace('.', '/')}/**"
+
+        File tempPath = tempJar(jar.archiveFile.get().getAsFile())
+        File jarPath = shadowJar.archiveFile.get().getAsFile()
+        inputs.file(jarPath)
+        from zipTree(jarPath)
+        archiveFileName = tempPath.name
+
+        doLast {
+            assert jarPath.delete()
+            assert tempPath.renameTo(jarPath)
+        }
+    }
+    finishArchive.dependsOn removeDuplicateThirdParty
+}
+ext.configureJUnitArchive = { configureDependencies ->
+    return {
+        delegate.with addCleanThirdPartyTask
+        compileJava.dependsOn project(':archunit-junit').finishArchive
+
+        publishing{
+            publications{
+                mavenJava{
+                    pom.withXml {
+                        configureDependencies(asNode().dependencies.first()) // there is only one "dependencies" element
+                    }
+                }
+            }
+        }
+    }
+}
+
+this.with addCleanThirdPartyTask
+
+javadoc.enabled = false

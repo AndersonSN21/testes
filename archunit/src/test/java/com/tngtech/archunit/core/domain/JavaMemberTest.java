@@ -1,0 +1,111 @@
+package com.tngtech.archunit.core.domain;
+
+import java.lang.annotation.Retention;
+
+import org.junit.Test;
+
+import static com.tngtech.archunit.base.DescribedPredicate.alwaysFalse;
+import static com.tngtech.archunit.base.DescribedPredicate.alwaysTrue;
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.equivalentTo;
+import static com.tngtech.archunit.core.domain.JavaMember.Predicates.declaredIn;
+import static com.tngtech.archunit.core.domain.TestUtils.importClassWithContext;
+import static com.tngtech.archunit.core.domain.TestUtils.importClassesWithContext;
+import static com.tngtech.archunit.testutil.Assertions.assertThat;
+import static java.lang.annotation.RetentionPolicy.RUNTIME;
+
+public class JavaMemberTest {
+    @Test
+    public void isAnnotatedWith_type() {
+        assertThat(importField(SomeClass.class, "someField").isAnnotatedWith(SomeAnnotation.class))
+                .as("field is annotated with @%s", SomeAnnotation.class.getSimpleName()).isTrue();
+        assertThat(importField(SomeClass.class, "someField").isAnnotatedWith(Retention.class))
+                .as("field is annotated with @Retention").isFalse();
+    }
+
+    @Test
+    public void isAnnotatedWith_typeName() {
+        assertThat(importField(SomeClass.class, "someField").isAnnotatedWith(SomeAnnotation.class.getName()))
+                .as("field is annotated with @%s", SomeAnnotation.class.getSimpleName()).isTrue();
+        assertThat(importField(SomeClass.class, "someField").isAnnotatedWith(Retention.class.getName()))
+                .as("field is annotated with @Retention").isFalse();
+    }
+
+    @Test
+    public void isAnnotatedWith_predicate() {
+        assertThat(importField(SomeClass.class, "someField")
+                .isAnnotatedWith(alwaysTrue()))
+                .as("predicate matches").isTrue();
+        assertThat(importField(SomeClass.class, "someField")
+                .isAnnotatedWith(alwaysFalse()))
+                .as("predicate matches").isFalse();
+    }
+
+    @Test
+    public void isMetaAnnotatedWith_type() {
+        JavaClass clazz = importClassesWithContext(SomeClass.class, Deprecated.class).get(SomeClass.class);
+
+        assertThat(clazz.getField("someField").isMetaAnnotatedWith(SomeAnnotation.class))
+                .as("field is meta-annotated with @SomeAnnotation").isTrue();
+        assertThat(clazz.getField("someField").isMetaAnnotatedWith(Retention.class))
+                .as("field is meta-annotated with @Retention").isTrue();
+        assertThat(clazz.getField("someField").isMetaAnnotatedWith(Deprecated.class))
+                .as("field is meta-annotated with @%s", Deprecated.class.getSimpleName()).isFalse();
+    }
+
+    @Test
+    public void isMetaAnnotatedWith_typeName() {
+        JavaClass clazz = importClassesWithContext(SomeClass.class, Deprecated.class).get(SomeClass.class);
+
+        assertThat(clazz.getField("someField").isMetaAnnotatedWith(SomeAnnotation.class.getName()))
+                .as("field is meta-annotated with @SomeAnnotation").isTrue();
+        assertThat(clazz.getField("someField").isMetaAnnotatedWith(Retention.class.getName()))
+                .as("field is meta-annotated with @Retention").isTrue();
+        assertThat(clazz.getField("someField").isMetaAnnotatedWith(Deprecated.class.getName()))
+                .as("field is meta-annotated with @%s", Deprecated.class.getSimpleName()).isFalse();
+    }
+
+    @Test
+    public void isMetaAnnotatedWith_predicate() {
+        JavaClass clazz = importClassesWithContext(SomeClass.class, Deprecated.class).get(SomeClass.class);
+
+        assertThat(clazz.getField("someField")
+                .isMetaAnnotatedWith(alwaysTrue()))
+                .as("predicate matches").isTrue();
+        assertThat(clazz.getField("someField")
+                .isMetaAnnotatedWith(alwaysFalse()))
+                .as("predicate matches").isFalse();
+    }
+
+    @Test
+    public void predicate_declaredIn() {
+        JavaField field = importField(SomeClass.class, "someField");
+
+        assertThat(declaredIn(SomeClass.class))
+                .accepts(field)
+                .hasDescription("declared in " + SomeClass.class.getName());
+        assertThat(declaredIn(SomeClass.class.getName()))
+                .accepts(field)
+                .hasDescription("declared in " + SomeClass.class.getName());
+        assertThat(declaredIn(equivalentTo(SomeClass.class).as("custom")))
+                .accepts(field)
+                .hasDescription("declared in custom");
+
+        assertThat(declaredIn(getClass())).rejects(field);
+        assertThat(declaredIn(getClass().getName())).rejects(field);
+        assertThat(declaredIn(equivalentTo(getClass()))).rejects(field);
+    }
+
+    private static JavaField importField(Class<?> owner, String name) {
+        return importClassWithContext(owner).getField(name);
+    }
+
+    @Retention(RUNTIME)
+    private @interface SomeAnnotation {
+    }
+
+    @SuppressWarnings("unused")
+    private static class SomeClass {
+        @SomeAnnotation
+        private String someField;
+    }
+}

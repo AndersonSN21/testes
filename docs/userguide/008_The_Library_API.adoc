@@ -1,0 +1,812 @@
+== The Library API
+
+The Library API offers a growing collection of predefined rules, which offer a more concise API
+for more complex but common patterns, like a layered architecture or checks for cycles between
+slices (compare <<What to Check>>).
+
+
+=== Architectures
+
+The entrance point for checks of common architectural styles is:
+
+[source,java,options="nowrap"]
+----
+com.tngtech.archunit.library.Architectures
+----
+
+At the moment this only provides a convenient check for a layered architecture and onion architecture.
+But in the future it might be extended for styles like a pipes and filters,
+separation of business logic and technical infrastructure, etc.
+
+==== Layered Architecture
+
+In layered architectures, we define different layers and how those interact with each other.
+An example setup for a simple 3-tier architecture can be found in <<Layer Checks>>.
+
+
+==== Onion Architecture
+
+In an "Onion Architecture" (also known as "Hexagonal Architecture" or "Ports and Adapters"),
+we can define domain packages and adapter packages as follows.
+
+[source,java]
+----
+onionArchitecture()
+        .domainModels("com.myapp.domain.model..")
+        .domainServices("com.myapp.domain.service..")
+        .applicationServices("com.myapp.application..")
+        .adapter("cli", "com.myapp.adapter.cli..")
+        .adapter("persistence", "com.myapp.adapter.persistence..")
+        .adapter("rest", "com.myapp.adapter.rest..");
+----
+
+The semantic follows the descriptions in https://jeffreypalermo.com/2008/07/the-onion-architecture-part-1/.
+More precisely, the following holds:
+
+* The `domain` package is the core of the application. It consists of two parts.
+    . The `domainModels` packages contain the domain entities.
+    . The packages in `domainServices` contains services that use the entities in the `domainModel` packages.
+* The `applicationServices` packages contain services and configuration to run the application and use cases.
+  It can use the items of the `domain` package but there must not be any dependency from the `domain`
+  to the `application` packages.
+* The `adapter` package contains logic to connect to external systems and/or infrastructure.
+  No adapter may depend on another adapter. Adapters can use both the items of the `domain` as well as
+  the `application` packages. Vice versa, neither the `domain` nor the `application` packages must
+  contain dependencies on any `adapter` package.
+
+
+[plantuml, "onion-architecture-check", svg, opts=interactive]
+----
+@startuml
+hide empty members
+set separator none
+skinparam componentStyle uml2
+
+skinparam class {
+  BorderColor #grey
+  BackgroundColor #white
+}
+
+package com.myapp.domain {
+    package model {
+        class DomainModel
+    }
+    package service {
+        class DomainService
+        interface DomainRepository
+    }
+}
+package com.myapp.application {
+    class ApplicationConfiguration
+}
+package com.myapp.adapter {
+    package cli {
+        class Cli
+    }
+    package persistence {
+        class NoSqlRepository
+    }
+    package rest {
+        class RestController
+    }
+}
+
+DomainService --> DomainModel #green
+DomainService -right-> DomainRepository #green
+
+ApplicationConfiguration ---> DomainService #green
+Cli --> DomainService #green
+Cli --> DomainRepository #green
+NoSqlRepository --|> DomainRepository #green
+NoSqlRepository --> DomainModel #green
+RestController -> DomainService #green
+RestController --> DomainModel #green
+
+DomainModel ---> DomainService #crimson
+note right on link #crimson: the domain model\nmust be independent
+
+DomainService --> RestController #crimson
+note right on link #crimson: the domain must not know\nabout any driving adapters
+DomainService --> NoSqlRepository #crimson
+note right on link #crimson: the domain must not know about\nspecific technical infrastructure
+
+ApplicationConfiguration ---> Cli
+note right on link #crimson: application services must not\nknow about any adapters
+
+Cli --> RestController #crimson
+note right on link #crimson: one adapter must not know\nabout any other adapter
+@enduml
+----
+
+
+=== Slices
+
+Currently, there are two "slice" rules offered by the Library API. These are basically rules
+that slice the code by packages, and contain assertions on those slices. The entrance point is:
+
+[source,java,options="nowrap"]
+----
+com.tngtech.archunit.library.dependencies.SlicesRuleDefinition
+----
+
+The API is based on the idea to sort classes into slices according to one or several package
+infixes, and then write assertions against those slices. At the moment this is for example:
+
+[source,java,options="nowrap"]
+----
+// sort classes by the first package after 'myapp'
+// then check those slices for cyclic dependencies
+SlicesRuleDefinition.slices().matching("..myapp.(*)..").should().beFreeOfCycles()
+
+// checks all subpackages of 'myapp' for cycles
+SlicesRuleDefinition.slices().matching("..myapp.(**)").should().beFreeOfCycles()
+
+// sort classes by packages between 'myapp' and 'service'
+// then check those slices for not having any dependencies on each other
+SlicesRuleDefinition.slices().matching("..myapp.(**).service..").should().notDependOnEachOther()
+----
+
+If this constraint is too rigid, e.g. in legacy applications where the package structure is rather
+inconsistent, it is possible to further customize the slice creation. This can be done by specifying
+a mapping of `JavaClass` to `SliceIdentifier` where classes with the same `SliceIdentifier` will
+be sorted into the same slice. Consider this example:
+
+[source,java,options="nowrap"]
+----
+SliceAssignment legacyPackageStructure = new SliceAssignment() {
+    // this will specify which classes belong together in the same slice
+    @Override
+    public SliceIdentifier getIdentifierOf(JavaClass javaClass) {
+        if (javaClass.getPackageName().startsWith("com.oldapp")) {
+            return SliceIdentifier.of("Legacy");
+        }
+        if (javaClass.getName().contains(".esb.")) {
+            return SliceIdentifier.of("ESB");
+        }
+        // ... further custom mappings
+
+        // if the class does not match anything, we ignore it
+        return SliceIdentifier.ignore();
+    }
+
+    // this will be part of the rule description if the test fails
+    @Override
+    public String getDescription() {
+        return "legacy package structure";
+    }
+};
+
+SlicesRuleDefinition.slices().assignedFrom(legacyPackageStructure).should().beFreeOfCycles()
+----
+
+==== Configurations
+
+There are two configuration parameters to adjust the behavior of the cycle detection.
+They can be configured via `archunit.properties` (compare <<Advanced Configuration>>).
+
+[source,options="nowrap"]
+.archunit.properties
+----
+# This will limit the maximum number of cycles to detect and thus required CPU and heap.
+# default is 100
+cycles.maxNumberToDetect=50
+
+# This will limit the maximum number of dependencies to report per cycle edge.
+# Note that ArchUnit will regardless always analyze all dependencies to detect cycles,
+# so this purely affects how many dependencies will be printed in the report.
+# Also note that this number will quickly affect the required heap since it scales with number.
+# of edges and number of cycles
+# default is 20
+cycles.maxNumberOfDependenciesPerEdge=5
+----
+
+==== The Cycle Detection Core API
+
+The underlying infrastructure for cycle detection that the `slices()` rule makes use of can also be accessed
+without any rule syntax around it. This allows to use the pure cycle detection algorithm in custom
+checks or libraries. The core class of the cycle detection is
+
+[source,java,options="nowrap"]
+----
+com.tngtech.archunit.library.cycle_detection.CycleDetector
+----
+
+It can be used on a set of a generic type `NODE` in combination with a generic `Set<EDGE>`
+(where `EDGE implements Edge<NODE>`) representing the edges of the graph:
+
+[source,java,options="nowrap"]
+----
+Set<MyNode> nodes = // ...
+Set<Edge<MyNode>> edges = // ...
+Cycles<Edge<MyNode>> foundCycles = CycleDetector.detectCycles(nodes, edges);
+----
+
+Edges are parameterized by a generic type `EDGE` to allow custom edge types that can
+then transport additional meta-information if needed.
+
+
+=== Modularization Rules
+
+[NOTE]
+Note: ArchUnit doesn't strive to be a "competition" for module systems like the
+Java Platform Module System. Such systems have advantages like checks at compile time
+versus test time as ArchUnit does. So, if another module system works well in your
+environment, there is no need to switch over. But ArchUnit can bring JPMS-like features
+to older code bases, e.g. Java 8 projects, or environments where the JPMS is for some
+reason no option. It also can accompany a module system by adding additional rules e.g.
+on the API of a module.
+
+To express the concept of modularization ArchUnit offers `ArchModule`﻿s. The entrypoint into
+the API is `ModuleRuleDefinition`, e.g.
+
+[source,java,options="nowrap"]
+----
+ModuleRuleDefinition.modules().definedByPackages("..example.(*)..").should().beFreeOfCycles();
+----
+
+As the example shows, it shares some concepts with the <<Slices>> API. For example `definedByPackages(..)`
+follows the same semantics as `slices().matching(..)`.
+Also, the configuration options for cycle detection mentioned in the last section are shared by these APIs.
+But, it also offers several powerful concepts beyond that API to express many different modularization scenarios.
+
+One example would be to express modules via annotation. We can introduce a custom annotation
+like `@AppModule` and follow a convention to annotate the top-level `package-info` file
+of each package we consider the root of a module. E.g.
+
+[source,java,options="nowrap"]
+.com/myapp/example/module_one/package-info.java
+----
+@AppModule(
+  name = "Module One",
+  allowedDependencies = {"Module Two", "Module Three"},
+  exposedPackages = {"..module_one.api.."}
+)
+package com.myapp.example.module_one;
+----
+
+We can then define a rule using this annotation:
+
+[source,java,options="nowrap"]
+----
+modules()
+  .definedByAnnotation(AppModule.class)
+  .should().respectTheirAllowedDependenciesDeclaredIn("allowedDependencies",
+      consideringOnlyDependenciesInAnyPackage("..example.."))
+  .andShould().onlyDependOnEachOtherThroughPackagesDeclaredIn("exposedPackages")
+----
+
+As the example shows, the syntax carries on meta-information (like the annotation of the annotated
+`package-info`) into the created `ArchModule` objects where it can
+be used to define the rule. In this example, the allowed dependencies are taken from the `@AppModule`
+annotation on the respective `package-info` and compared to the actual module dependencies. Any
+dependency not listed is reported as violation.
+Likewise, the exposed packages are taken from the `@AppModule` annotation and any dependency
+where the target class's package doesn't match any declared package identifier is reported
+as violation.
+
+Note that the `modules()` API can be adjusted in many ways to model custom requirements.
+For further details, please take a look at the examples provided
+https://github.com/TNG/ArchUnit-Examples/blob/main/example-junit5/src/test/java/com/tngtech/archunit/exampletest/junit5/ModulesTest.java[here].
+
+==== Modularization Core API
+
+The infrastructure to create modules and inspect their dependencies can also be used outside
+the rule syntax, e.g. for custom checks or utility code:
+
+[source,java,options="nowrap"]
+----
+ArchModules<?> modules = ArchModules.defineByPackages("..example.(*)..").modularize(javaClasses);
+ArchModule<?> coreModule = modules.getByIdentifier("core");
+Set<? extends ModuleDependency<?>> coreDependencies = coreModule.getModuleDependenciesFromSelf();
+coreDependencies.forEach(...);
+----
+
+
+=== General Coding Rules
+
+The Library API also offers a small set of coding rules that might be useful in various projects.
+Those can be found within
+
+[source,java,options="nowrap"]
+----
+com.tngtech.archunit.library
+----
+
+==== GeneralCodingRules
+
+The class `GeneralCodingRules` contains a set of very general rules and conditions for coding.
+For example:
+
+* To check that classes do not access `System.out` or `System.err`, but use logging instead.
+* To check that classes do not throw generic exceptions, but use specific exceptions instead.
+* To check that classes do not use `java.util.logging`, but use other libraries like Log4j, Logback, or SLF4J instead
+* To check that classes do not use JodaTime, but use `java.time` instead.
+* To check that classes do not use field injection, but constructor injection instead.
+
+==== DependencyRules
+
+The class `DependencyRules` contains a set of rules and conditions for checking dependencies between classes.
+For example:
+
+* To check that classes do not depend on classes from upper packages.
+
+==== ProxyRules
+
+The class `ProxyRules` contains a set of rules and conditions for checking the usage of proxy objects.
+For example:
+
+* To check that methods that matches a predicate are not called directly from within the same class.
+
+=== PlantUML Component Diagrams as rules
+
+The Library API offers a feature that supports http://plantuml.com/component-diagram[PlantUML] diagrams.
+This feature is located in
+
+[source,java,options="nowrap"]
+----
+com.tngtech.archunit.library.plantuml
+----
+
+ArchUnit can derive rules straight from PlantUML diagrams and check to make sure that all imported
+`JavaClasses` abide by the dependencies of the diagram. The respective rule can be created in the following way:
+
+[source,java,options="nowrap"]
+----
+URL myDiagram = getClass().getResource("my-diagram.puml");
+
+classes().should(adhereToPlantUmlDiagram(myDiagram, consideringAllDependencies()));
+----
+
+Diagrams supported have to be component diagrams and associate classes to components via stereotypes.
+The way this works is to use the respective package identifiers (compare
+`ArchConditions.onlyHaveDependenciesInAnyPackage(..)`) as stereotypes:
+
+[plantuml, "simple-plantuml-archrule-example", svg, opts=interactive]
+----
+[Some Source] <<..some.source..>>
+[Some Target] <<..some.target..>> as target
+
+[Some Source] --> target
+----
+
+[source,options="nowrap"]
+----
+@startuml
+[Some Source] <<..some.source..>>
+[Some Target] <<..some.target..>> as target
+
+[Some Source] --> target
+@enduml
+----
+
+Consider this diagram applied as a rule via `adhereToPlantUmlDiagram(..)`, then for example
+a class `some.target.Target` accessing `some.source.Source` would be reported as a violation.
+
+==== Configurations
+
+There are different ways to deal with dependencies of imported classes not covered by the
+diagram at all. The behavior of the PlantUML API can be configured by supplying a respective
+`Configuration`:
+
+[source,java,options="nowrap"]
+----
+// considers all dependencies possible (including java.lang, java.util, ...)
+classes().should(adhereToPlantUmlDiagram(
+        mydiagram, consideringAllDependencies())
+
+// considers only dependencies specified in the PlantUML diagram
+// (so any unknown dependency will be ignored)
+classes().should(adhereToPlantUmlDiagram(
+        mydiagram, consideringOnlyDependenciesInDiagram())
+
+// considers only dependencies in any specified package
+// (control the set of dependencies to consider, e.g. only com.myapp..)
+classes().should(adhereToPlantUmlDiagram(
+        mydiagram, consideringOnlyDependenciesInAnyPackage("..some.package.."))
+----
+
+It is possible to further customize which dependencies to ignore:
+
+[source,java,options="nowrap"]
+----
+// there are further ignore flavors available
+classes().should(adhereToPlantUmlDiagram(mydiagram).ignoreDependencies(predicate))
+----
+
+A PlantUML diagram used with ArchUnit must abide by a certain set of rules:
+
+1. Components must be declared in the bracket notation (i.e. `[Some Component]`)
+2. Components must have at least one (possible multiple) stereotype(s). Each stereotype in the diagram
+must be unique and represent a valid package identifier (e.g. `\<<..example..>>` where `..` represents
+an arbitrary number of packages; compare the core API)
+3. Components may have an optional alias (e.g. `[Some Component] \<<..example..>> as myalias`). The alias must be alphanumeric and must not be quoted.
+4. Components may have an optional color (e.g. `[Some Component] \<<..example..>> #OrangeRed`)
+5. Dependencies must use arrows only consisting of dashes (e.g. `-\->`)
+6. Dependencies may go from left to right `-\->` or right to left `\<--`
+7. Dependencies may consist of any number of dashes (e.g `\->` or `----\->`)
+8. Dependencies may contain direction hints (e.g. `-up\->`) or color directives (e.g. `-[#green]\->`)
+
+You can compare this
+https://github.com/TNG/ArchUnit-Examples/blob/main/example-plain/src/test/resources/com/tngtech/archunit/exampletest/shopping_example.puml[diagram of ArchUnit-Examples].
+
+
+=== Freezing Arch Rules
+
+When rules are introduced in grown projects, there are often hundreds or even thousands of violations,
+way too many to fix immediately. The only way to tackle such extensive violations is to establish an
+iterative approach, which prevents the code base from further deterioration.
+
+`FreezingArchRule` can help in these scenarios by recording all existing violations to a `ViolationStore`.
+Consecutive runs will then only report new violations and ignore known violations.
+If violations are fixed, `FreezingArchRule` will automatically reduce the known stored violations to prevent any regression.
+
+==== Usage
+
+To freeze an arbitrary `ArchRule` just wrap it into a `FreezingArchRule`:
+
+[source,java,options="nowrap"]
+----
+ArchRule rule = FreezingArchRule.freeze(classes().should()./*complete ArchRule*/);
+----
+
+On the first run all violations of that rule will be stored as the current state. On consecutive runs only
+new violations will be reported. By default `FreezingArchRule` will ignore line numbers, i.e. if a
+violation is just shifted to a different line, it will still count as previously recorded
+and will not be reported.
+
+==== Configuration
+
+By default `FreezingArchRule` will use a simple `ViolationStore` based on plain text files.
+This is sufficient to add these files to any version control system to continuously track the progress.
+You can configure the location of the violation store within `archunit.properties` (compare <<Advanced Configuration>>):
+
+[source,options="nowrap"]
+.archunit.properties
+----
+freeze.store.default.path=/some/path/in/a/vcs/repo
+----
+
+Furthermore, it is possible to configure
+
+[source,options="nowrap"]
+.archunit.properties
+----
+# must be set to true to allow the creation of a new violation store
+# default is false
+freeze.store.default.allowStoreCreation=true
+
+# can be set to false to forbid updates of the violations stored for frozen rules
+# default is true
+freeze.store.default.allowStoreUpdate=false
+----
+
+This can help in CI environments to prevent misconfiguration:
+For example, a CI build should probably never create a new the violation store, but operate on
+an existing one.
+
+As mentioned in <<Overriding configuration>>, these properties can be passed as system properties as needed.
+For example to allow the creation of the violation store in a specific environment, it is possible to pass the system property via
+
+[source,options="nowrap"]
+----
+-Darchunit.freeze.store.default.allowStoreCreation=true
+----
+
+It is also possible to allow all violations to be "refrozen", i.e. the store will just be updated
+with the current state, and the reported result will be success. Thus, it is effectively the same behavior
+as if all rules would never have been frozen.
+This can e.g. make sense, because current violations are consciously accepted and should be added to the store,
+or because the format of some violations has changed. The respective property to allow refreezing
+all current violations is `freeze.refreeze=true`, where the default is `false`.
+
+==== Extension
+
+`FreezingArchRule` provides two extension points to adjust the behavior to custom needs.
+The first one is the `ViolationStore`, i.e. the store violations will be recorded to. The second one
+is the `ViolationLineMatcher`, i.e. how `FreezingArchRule` will associate lines of stored violations
+with lines of actual violations. As mentioned, by default this is a line matcher that ignores the
+line numbers of violations within the same class.
+
+===== Violation Store
+
+As mentioned in <<Configuration>>, the default `ViolationStore` is a simple text based store.
+It can be exchanged though, for example to store violations in a database.
+To provide your own implementation, implement `com.tngtech.archunit.library.freeze.ViolationStore` and
+configure `FreezingArchRule` to use it. This can either be done programmatically:
+
+[source,java,options="nowrap"]
+----
+FreezingArchRule.freeze(rule).persistIn(customViolationStore);
+----
+
+Alternatively it can be configured via `archunit.properties` (compare <<Advanced Configuration>>):
+
+[source,options="nowrap"]
+----
+freeze.store=fully.qualified.name.of.MyCustomViolationStore
+----
+
+You can supply properties to initialize the store by using the namespace `freeze.store`.
+For properties
+
+[source,options="nowrap"]
+----
+freeze.store.propOne=valueOne
+freeze.store.propTwo=valueTwo
+----
+
+the method `ViolationStore.initialize(props)` will be called with the properties
+
+[source,options="nowrap"]
+----
+propOne=valueOne
+propTwo=valueTwo
+----
+
+===== Violation Line Matcher
+
+The `ViolationLineMatcher` compares lines from occurred violations with lines from the store.
+The default implementation ignores line numbers and numbers of anonymous classes or lambda expressions,
+and counts lines as equivalent when all other details match.
+A custom `ViolationLineMatcher` can again either be defined programmatically:
+
+[source,java,options="nowrap"]
+----
+FreezingArchRule.freeze(rule).associateViolationLinesVia(customLineMatcher);
+----
+
+or via `archunit.properties`:
+
+[source,options="nowrap"]
+----
+freeze.lineMatcher=fully.qualified.name.of.MyCustomLineMatcher
+----
+
+=== Software Architecture Metrics
+
+Similar to code quality metrics, like cyclomatic complexity or method length,
+software architecture metrics strive to measure the structure and design of software.
+ArchUnit can be used to calculate some well-known software architecture metrics.
+The foundation of these metrics is generally some form of componentization, i.e.
+we partition the classes/methods/fields of a Java application into related units
+and provide measurements for these units. In ArchUnit this concept is expressed by
+`com.tngtech.archunit.library.metrics.MetricsComponent`. For some metrics, like the
+Cumulative Dependency Metrics by John Lakos, we also need to know the dependencies
+between those components, which are naturally derived from the dependencies between
+the elements (e.g. classes) within these components.
+
+A very simple concrete example would be to consider some Java packages as
+components and the classes within these packages as the contained elements. From
+the dependencies between the classes we can derive which package depends on which
+other package.
+
+The following will give a quick overview of the metrics that ArchUnit can calculate.
+However, for further background information it is recommended to rely on
+some dedicated literature that explains these metrics in full detail.
+
+==== Cumulative Dependency Metrics by John Lakos
+
+These are software architecture metrics as defined by John Lakos in his book
+"Large-Scale C++ Software Design". The basic idea is to calculate the `DependsOn`
+value for each component, which is the sum of all components that can be
+transitively reached from some component including the component itself.
+
+From these values we can derive
+
+* Cumulative Component Dependency (*CCD*):
+The sum of all `DependsOn` values of all components
+* Average Component Dependency (*ACD*):
+The `CCD` divided by the number of all components
+* Relative Average Component Dependency (*RACD*):
+The `ACD` divided by the number of all components
+* Normalized Cumulative Component Dependency (*NCCD*):
+The `CCD` of the system divided by the `CCD` of a balanced binary tree with the same number of components
+
+===== Example
+
+[plantuml, "lakos-example", svg, opts=interactive]
+----
+skinparam componentStyle uml2
+skinparam component {
+  BorderColor #grey
+  BackgroundColor #white
+}
+skinparam legend {
+  BackgroundColor #lightyellow
+}
+
+[Component One\nDependsOn: 5] as one
+[Component Two\nDependsOn: 4] as two
+[Component Three\nDependsOn: 5] as three
+[Component Four\nDependsOn: 1] as four
+[Component Five\nDependsOn: 2] as five
+[Component Six\nDependsOn: 1] as six
+
+one --> two
+three --> two
+two --> four
+two --> five
+two --> six
+five --> six
+
+legend
+| <b>CCD</b>  | 18   |
+| <b>ACD</b>  | 3.0  |
+| <b>RACD</b> | 0.5  |
+| <b>NCCD</b> | 1.29 |
+endlegend
+----
+
+Thus these metrics provide some insights into the complexity of the dependency graph of a system.
+Note that in a cycle all elements have the same `DependsOn` value which will lead to an increased
+CCD. In fact for any non-trivial (`n >= 5`) acyclic graph of components the RACD is bound by `0.6`.
+
+===== How to use the API
+
+The values described for these metrics can be calculated in the following way:
+
+[source,java,options="nowrap"]
+----
+import com.tngtech.archunit.library.metrics.ArchitectureMetrics;
+// ...
+
+JavaClasses classes = // ...
+Set<JavaPackage> packages = classes.getPackage("com.example").getSubpackages();
+
+// These components can also be created in a package agnostic way, compare MetricsComponents.from(..)
+MetricsComponents<JavaClass> components = MetricsComponents.fromPackages(packages);
+
+LakosMetrics metrics = ArchitectureMetrics.lakosMetrics(components);
+
+System.out.println("CCD: " + metrics.getCumulativeComponentDependency());
+System.out.println("ACD: " + metrics.getAverageComponentDependency());
+System.out.println("RACD: " + metrics.getRelativeAverageComponentDependency());
+System.out.println("NCCD: " + metrics.getNormalizedCumulativeComponentDependency());
+----
+
+==== Component Dependency Metrics by Robert C. Martin
+
+These software architecture metrics were defined by Robert C. Martin in various sources,
+for example in his book "Clean architecture : a craftsman's guide to software structure and design".
+
+The foundation are again components, that must in this case contain classes as their elements
+(i.e. these are purely object-oriented metrics that need a concept of abstract classes).
+
+The metrics are based on the following definitions:
+
+* Efferent Coupling (*Ce*): The number of outgoing dependencies to any other component
+* Afferent Coupling (*Ca*): The number of incoming dependencies from any other component
+* Instability (*I*): `Ce / (Ca + Ce)`, i.e. the relationship of outgoing dependencies
+to all dependencies
+* Abstractness (*A*): `num(abstract_classes) / num(all_classes)` in the component
+* Distance from Main Sequence (*D*): `| A + I - 1 |`, i.e. the normalized distance from
+the ideal line between `(A=1, I=0)` and `(A=0, I=1)`
+
+Note that ArchUnit slightly differs from the original definition. In ArchUnit
+the Abstractness value is only based on public classes, i.e.
+classes that are visible from the outside. The reason is that *Ce*, *Ca* and *I* all
+are metrics with respect to coupling of components. But only classes that are visible
+to the outside can affect coupling between components,
+so it makes sense to only consider those classes to calculate the *A* value.
+
+===== Example
+
+The following provides some example where the `A` values assume some random factor
+of abstract classes within the respective component.
+
+[plantuml, "martin-example", svg, opts=interactive]
+----
+skinparam componentStyle uml2
+skinparam component {
+  BorderColor #grey
+  BackgroundColor #white
+}
+skinparam legend {
+  BackgroundColor #lightyellow
+}
+
+[Component One\nCe: 1\nCa: 0\nI: 1.0\nA: 0.33\nD: 0.33] as one
+[Component Two\nCe: 3\nCa: 2\nI: 0.6\nA: 0.5\nD: 0.1] as two
+[Component Three\nCe: 1\nCa: 0\nI: 1.0\nA: 0.0\nD: 0.0] as three
+[Component Four\nCe: 0\nCa: 1\nI: 0.0\nA: 0.0\nD: 1.0] as four
+[Component Five\nCe: 1\nCa: 1\nI: 0.5\nA: 0.66\nD: 0.16] as five
+[Component Six\nCe: 0\nCa: 2\nI: 0.0\nA: 0.0\nD: 1.0] as six
+
+one --> two
+three --> two
+two --> four
+two --> five
+two --> six
+five --> six
+----
+
+===== How to use the API
+
+The values described for these metrics can be calculated in the following way:
+
+[source,java,options="nowrap"]
+----
+import com.tngtech.archunit.library.metrics.ArchitectureMetrics;
+// ...
+
+JavaClasses classes = // ...
+Set<JavaPackage> packages = classes.getPackage("com.example").getSubpackages();
+
+// These components can also be created in a package agnostic way, compare MetricsComponents.from(..)
+MetricsComponents<JavaClass> components = MetricsComponents.fromPackages(packages);
+
+ComponentDependencyMetrics metrics = ArchitectureMetrics.componentDependencyMetrics(components);
+
+System.out.println("Ce: " + metrics.getEfferentCoupling("com.example.component"));
+System.out.println("Ca: " + metrics.getAfferentCoupling("com.example.component"));
+System.out.println("I: " + metrics.getInstability("com.example.component"));
+System.out.println("A: " + metrics.getAbstractness("com.example.component"));
+System.out.println("D: " + metrics.getNormalizedDistanceFromMainSequence("com.example.component"));
+----
+
+==== Visibility Metrics by Herbert Dowalil
+
+These software architecture metrics were defined by Herbert Dowalil in his book
+"Modulare Softwarearchitektur: Nachhaltiger Entwurf durch Microservices, Modulithen und SOA 2.0".
+They provide a measure for the Information Hiding Principle, i.e. the relation of visible to hidden
+elements within a component.
+
+The metrics are composed from the following definitions:
+
+* Relative Visibility (*RV*): `num(visible_elements) / num(all_elements)` for each component
+* Average Relative Visibility (*ARV*): The average of all `RV` values
+* Global Relative Visibility (*GRV*): `num(visible_elements) / num(all_elements)` over all components
+
+===== Example
+
+[plantuml, "dowalil-example", svg, opts=interactive]
+----
+skinparam componentStyle uml2
+skinparam component {
+  BorderColor #grey
+  BackgroundColor #white
+}
+skinparam legend {
+  BackgroundColor #lightyellow
+}
+
+package "One RV(0.25)" {
+    [Element One] <<visible>> #tomato
+    [Element Two] <<hidden>> #lightgreen
+    [Element Three] <<hidden>> #lightgreen
+    [Element Four] <<hidden>> #lightgreen
+}
+
+package "Two RV(0.66)" {
+    [Element Five] <<visible>> #tomato
+    [Element Six] <<visible>> #tomato
+    [Element Seven] <<hidden>> #lightgreen
+}
+
+legend
+| <b>ARV</b> | 0.46  |
+| <b>GRV</b> | 0.43  |
+endlegend
+----
+
+===== How to use the API
+
+The values described for these metrics can be calculated in the following way:
+
+[source,java,options="nowrap"]
+----
+import com.tngtech.archunit.library.metrics.ArchitectureMetrics;
+// ...
+
+JavaClasses classes = // ...
+Set<JavaPackage> packages = classes.getPackage("com.example").getSubpackages();
+
+// These components can also be created in a package agnostic way, compare MetricsComponents.from(..)
+MetricsComponents<JavaClass> components = MetricsComponents.fromPackages(packages);
+
+VisibilityMetrics metrics = ArchitectureMetrics.visibilityMetrics(components);
+
+System.out.println("RV : " + metrics.getRelativeVisibility("com.example.component"));
+System.out.println("ARV: " + metrics.getAverageRelativeVisibility());
+System.out.println("GRV: " + metrics.getGlobalRelativeVisibility());
+----

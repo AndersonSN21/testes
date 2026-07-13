@@ -1,0 +1,16 @@
+plugins {
+    id 'archunit.java-release-conventions'
+}
+
+ext.moduleName = 'com.tngtech.archunit.junit5'
+
+ext.minimumJavaVersion = JavaVersion.VERSION_1_8
+
+dependencies {
+    api(project(":archunit-junit5-api"))
+    implementation(project(":archunit-junit5-engine"))
+}
+
+shadowJar {
+    exclude '**'
+}

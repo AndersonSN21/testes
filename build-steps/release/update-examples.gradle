@@ -1,0 +1,68 @@
+import groovy.io.FileType
+
+import java.util.regex.Pattern
+
+apply from: scriptRelativePath(this, 'archunit-examples-utils.gradle')
+
+final File checkoutDir = new File(project.buildDir, 'example-update')
+
+task checkoutArchUnitExample {
+    doLast {
+        gitHubClone(archunitExamplesGitRepo, checkoutDir)
+    }
+}
+
+task copyArchUnitExampleSrc(dependsOn: checkoutArchUnitExample) {
+    doLast {
+        updateArchUnitExampleSources(checkoutDir)
+    }
+}
+
+def removeLines = { File file, List<String> linesToRemove ->
+    def regex = "(${linesToRemove.collect { Pattern.quote(it) }.join('|')})\n"
+    file.text = file.text.replaceAll(regex, '')
+}
+
+def removeExampleCategory = { File baseDir, String categoryFqn ->
+    new File(baseDir, "src/test/java/${categoryFqn.replace('.', '/')}.java").delete()
+
+    new File(baseDir, 'src').traverse(type: FileType.FILES, nameFilter: { it.endsWith('.java') }) { File file ->
+        removeLines(file, [
+                '@Category(Example.class)',
+                'import org.junit.experimental.categories.Category;',
+                "import ${categoryFqn};"
+        ])
+    }
+}
+
+def removeExampleTag = { File baseDir ->
+    new File(baseDir, 'src').traverse(type: FileType.FILES, nameFilter: { it.endsWith('.java') }) { File file ->
+        removeLines(file, [
+                '@ArchTag("example")',
+                'import com.tngtech.archunit.junit.ArchTag;'
+        ])
+    }
+}
+
+task removeArchUnitExampleCategory(dependsOn: copyArchUnitExampleSrc) {
+    doLast {
+        removeExampleCategory(new File(checkoutDir, 'example-plain'), 'com.tngtech.archunit.exampletest.Example')
+        removeExampleCategory(new File(checkoutDir, 'example-junit4'), 'com.tngtech.archunit.exampletest.junit4.Example')
+        removeExampleTag(new File(checkoutDir, 'example-junit5'))
+    }
+}
+
+task adjustArchUnitExampleVersion(dependsOn: checkoutArchUnitExample) {
+    doLast {
+        updateArchUnitExampleVersion(checkoutDir)
+    }
+}
+
+task updateArchUnitExample(dependsOn: [
+        checkoutArchUnitExample,
+        adjustArchUnitExampleVersion,
+        copyArchUnitExampleSrc,
+        removeArchUnitExampleCategory]) {
+
+    ext.checkoutDir = checkoutDir
+}

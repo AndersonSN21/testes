@@ -1,0 +1,86 @@
+plugins {
+    id 'archunit.base-conventions'
+    id 'com.gradleup.shadow' version '9.4.1' apply false
+    id 'com.github.spotbugs' version '6.5.4' apply false
+    id "io.github.gradle-nexus.publish-plugin" version "2.0.0" apply false
+    id "com.diffplug.spotless" version "8.5.1" apply false
+    id 'com.github.ben-manes.versions' version '0.54.0' apply false
+}
+
+def appAndSourceUrl = 'https://github.com/TNG/ArchUnit'
+
+ext {
+    year = "${Calendar.getInstance().get(Calendar.YEAR)}"
+    app = [
+            name   : 'ArchUnit',
+            urls   : [
+                    entry : appAndSourceUrl,
+                    doc   : appAndSourceUrl,
+                    issues: "${appAndSourceUrl}/issues",
+                    source: appAndSourceUrl
+            ],
+            gitRepo: 'git@github.com:TNG/ArchUnit.git',
+            license: [
+                    name: 'The Apache Software License, Version 2.0',
+                    url : 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+            ]
+    ]
+    company = [
+            name: 'TNG Technology Consulting GmbH',
+            url : 'https://www.tngtech.com/'
+    ]
+
+    thirdPartyRelocationPackage = 'com.tngtech.archunit.thirdparty'
+    asmRelocationPackage = "${thirdPartyRelocationPackage}.org.objectweb.asm"
+    googleRelocationPackage = "${thirdPartyRelocationPackage}.com.google"
+
+    dependency = [
+            addGuava             : { dependencyHandler ->
+                dependencyHandler(libs.guava) {
+                    exclude module: 'listenablefuture'
+                    exclude module: 'jspecify'
+                    exclude module: 'error_prone_annotations'
+                    exclude module: 'j2objc-annotations'
+                }
+            },
+    ]
+
+    minSupportedJavaVersion = JavaVersion.VERSION_1_8
+    maxSupportedJavaVersion = JavaVersion.VERSION_25
+    isTestBuild = project.hasProperty('testJavaVersion')
+    configuredTestJavaVersion = project.findProperty('testJavaVersion')?.toString()?.with { JavaVersion.toVersion(it) }
+    assert configuredTestJavaVersion <= maxSupportedJavaVersion:
+            "Cannot test with ${configuredTestJavaVersion} because it is higher than max supported version ${maxSupportedJavaVersion}"
+
+    postfixedJar = { File jarFile, String postfix ->
+        new File(jarFile.parentFile, jarFile.name.replaceAll(/\.jar$/, "-${postfix}.jar"))
+    }
+
+    tempJar = { File jarFile -> postfixedJar(jarFile, 'tmp') }
+
+    productionProjects = [
+            project(':archunit'),
+            project(':archunit-junit'),
+            project(':archunit-junit4'),
+            project(':archunit-junit5-api'),
+            project(':archunit-junit5-engine-api'),
+            project(':archunit-junit5-engine'),
+            project(':archunit-junit5')]
+
+    currentScriptRootOf = { it.buildscript.sourceFile.parentFile }
+    scriptRelativePath = { context, fileName -> new File(currentScriptRootOf(context), fileName) }
+}
+
+description = 'A Java architecture test library, to specify and assert architecture rules in plain Java'
+
+task showJdkVersion {
+    println "Configured JDK: ${JavaVersion.current()}"
+}
+
+task clean {
+    doLast {
+        project.buildDir.deleteDir()
+    }
+}
+
+apply from: 'build-steps/build-steps.gradle'

@@ -1,0 +1,50 @@
+plugins {
+    id 'archunit.java-release-conventions'
+}
+
+ext.moduleName = 'com.tngtech.archunit.junit4'
+
+dependencies {
+    api project(path: ':archunit', configuration: 'shadow')
+    api project(path: ':archunit-junit', configuration: 'archJunitApi')
+    api libs.junit4
+    implementation project(path: ':archunit-junit', configuration: 'shadow')
+    dependency.addGuava { dependencyNotation, config -> implementation(dependencyNotation, config) }
+
+    testImplementation libs.junit4
+    testImplementation libs.mockito
+    testImplementation libs.assertj
+    testImplementation project(path: ':archunit', configuration: 'tests')
+
+    // This is a hack for running tests with IntelliJ instead of delegating to Gradle,
+    // because for some reason this dependency cannot be resolved otherwise :-(
+    testRuntimeOnly libs.asm
+}
+
+javadoc {
+    source(['archJunitApi', 'main'].collect { project(':archunit-junit').sourceSets[it].allJava })
+}
+sourcesJar {
+    ['archJunitApi', 'main'].each {
+        from project(':archunit-junit').sourceSets[it].allSource
+    }
+}
+
+shadowJar {
+    exclude 'META-INF/**'
+
+    dependencies {
+        exclude(project(':archunit'))
+        exclude(dependency("${libs.junit4.get()}"))
+        exclude(dependency("${libs.hamcrest.get()}")) // Shadow doesn't respect transitive excludes :-(
+        exclude(dependency("${libs.guava.get()}"))
+        exclude(dependency("com.google.guava:failureaccess:.*"))
+    }
+}
+
+def configureDependencies = { deps ->
+    deps.children().removeIf { dep ->
+        dep.scope.text() != 'compile' || !(dep.artifactId.text() in ['archunit', 'archunit-junit5-api', 'archunit-junit5-engine-api', 'junit'])
+    }
+}
+this.with project(':archunit-junit').configureJUnitArchive(configureDependencies)

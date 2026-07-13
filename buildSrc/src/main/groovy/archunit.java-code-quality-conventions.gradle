@@ -1,0 +1,23 @@
+plugins {
+    id 'com.github.spotbugs'
+    id 'com.diffplug.spotless'
+}
+
+spotbugs {
+    excludeFilter = rootProject.file('buildSrc/src/main/resources/code_quality/spotbugs-excludes.xml')
+}
+
+spotbugsMain {
+    reports {
+        xml.enabled false
+        html.enabled true
+    }
+}
+
+spotbugsTest.enabled = false
+
+spotless {
+    java {
+        removeUnusedImports()
+    }
+}

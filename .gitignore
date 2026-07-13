@@ -1,0 +1,17 @@
+.gradle
+.idea
+*.iml
+build
+out
+/archunit-maven-test/target
+.project
+.settings
+.classpath
+bin/
+_site
+.sass-cache
+.jekyll-metadata
+.jekyll-cache
+.asciidoctor
+verification-results
+.java-version

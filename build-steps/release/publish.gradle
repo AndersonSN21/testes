@@ -1,0 +1,85 @@
+ext.isReleaseVersion = !project.version.endsWith("-SNAPSHOT")
+
+apply plugin: "io.github.gradle-nexus.publish-plugin"
+apply from: scriptRelativePath(this, 'process-utils.gradle')
+
+nexusPublishing {
+    packageGroup = 'com.tngtech'
+    repositories {
+        sonatype {
+            nexusUrl.set(uri("https://ossrh-staging-api.central.sonatype.com/service/local/"))
+            snapshotRepositoryUrl.set(uri("https://central.sonatype.com/repository/maven-snapshots/"))
+            username = findProperty("sonatypeUsername")
+            password = findProperty("sonatypePassword")
+        }
+    }
+}
+
+initializeSonatypeStagingRepository.doFirst {
+    assert !isTestBuild: 'We cannot publish a test build, since a changed JDK target compatibility would break the artifacts'
+}
+task publishArchUnit(dependsOn: [closeSonatypeStagingRepository, releaseSonatypeStagingRepository])
+
+def getLastReleaseVersion() {
+    (new File(project.rootDir, 'README.md').text =~ /testImplementation 'com.tngtech.archunit:archunit:(\d+.\d+.\d+.*)'/).findAll().first()[1]
+}
+
+def gradleProperties = new File(project.rootDir, 'gradle.properties')
+
+def getCurrentVersion = {
+    (gradleProperties.text =~ /archunit\.version=(.*)/).findAll().first()[1]
+}
+
+def withCurrentVersion = { Closure<?> doWithCurrentVersion ->
+    List<String> versionParts = (getCurrentVersion() =~ /^(\d+)\.(\d+)\.(\d+)(.*)$/).findAll().first().tail()
+    assert versionParts.size() == 4: "Could not parse major.minor.patch(-suffix)? from supplied version string '$version'"
+
+    int majorVersion = Integer.parseInt(versionParts[0])
+    int minorVersion = Integer.parseInt(versionParts[1])
+    int patchVersion = Integer.parseInt(versionParts[2])
+    String suffix = versionParts[3]
+    return doWithCurrentVersion(majorVersion, minorVersion, patchVersion, suffix)
+}
+
+def updateVersion = { Closure<String> calculateNewVersion ->
+    def newVersion = withCurrentVersion(calculateNewVersion)
+    println "Setting ArchUnit version to ${newVersion}"
+    gradleProperties.text = gradleProperties.text.replaceAll(/archunit\.version=.*/, "archunit.version=${newVersion}")
+    rootProject.allprojects { it.version = newVersion }
+}
+
+task prepareRelease() {
+    doFirst {
+        String releaseVersion = withCurrentVersion { int oldMajor, int oldMinor, int oldPatch, String oldSuffix ->
+            "$oldMajor.$oldMinor.$oldPatch${oldSuffix.replace('-SNAPSHOT', '')}"
+        }
+
+        def releaseBranch = "release-$releaseVersion"
+        executeCommand(['git', 'checkout', '-b', "$releaseBranch"])
+        String currentBranch = executeCommand(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
+        assert currentBranch == releaseBranch: "Mismatch: Should be on branch $releaseBranch but current branch is $currentBranch"
+
+        updateVersion { major, minor, patch, suffix -> releaseVersion }
+
+        String lastReleaseVersion = getLastReleaseVersion()
+        ['README.md', 'docs/_data/navigation.yml', 'docs/_pages/getting-started.md'].each {
+            new File(project.rootDir, it).with { file ->
+                println "Replacing last release version $lastReleaseVersion by $releaseVersion in file ${file.absolutePath}"
+                file.text = file.text.replaceAll(lastReleaseVersion, releaseVersion)
+            }
+        }
+    }
+}
+prepareRelease.finalizedBy(':docs:renderUserGuide')
+
+task setNextSnapshotVersion() {
+    doFirst {
+        updateVersion { int oldMajor, int oldMinor, int oldPatch, String oldSuffix -> "$oldMajor.${oldMinor + 1}.0-SNAPSHOT" }
+    }
+}
+
+releaseSonatypeStagingRepository.doFirst {
+    def activateReleasePropertyName = 'activateReleaseToMavenCentral'
+    assert project.findProperty(activateReleasePropertyName) != null:
+            "Release to Maven Central is disabled by default. Activate via '-P${activateReleasePropertyName}'"
+}

@@ -1,0 +1,127 @@
+plugins {
+    id 'archunit.java-release-conventions'
+}
+
+ext.moduleName = 'com.tngtech.archunit'
+
+dependencies {
+    api libs.slf4j
+    implementation libs.asm
+    dependency.addGuava { dependencyNotation, config -> implementation(dependencyNotation, config) }
+
+    testImplementation libs.log4j.api
+    testImplementation libs.log4j.core
+    testImplementation libs.junit4
+    testImplementation libs.junitDataprovider
+    testImplementation libs.mockito
+    testImplementation libs.assertj
+    testImplementation(libs.assertj.guava) {
+        exclude module: 'assertj-core'
+        exclude module: 'guava'
+    }
+}
+
+shadowJar {
+    exclude 'META-INF/**'
+
+    dependencies {
+        exclude(dependency("${libs.slf4j.get()}"))
+    }
+}
+
+repackaging {
+    repackagesAsm true
+}
+
+/* Besides SLF4J we'll shadow everything we need into the JAR to avoid conflicts with other libraries*/
+publishing {
+    publications {
+        mavenJava {
+            pom.withXml {
+                def deps = asNode().dependencies.first() // there is only one "dependencies" element
+                deps.children().removeIf { dep ->
+                    dep.artifactId.text() != 'slf4j-api' || dep.scope.text() != 'compile'
+                }
+            }
+        }
+    }
+}
+
+archUnitTest {
+    providesTestJar = true
+}
+
+def jdk9MainDirs = ['src/jdk9main/java']
+def jdk9TestDirs = ['src/jdk9test/java']
+def jdk16TestDirs = ['src/jdk16test/java']
+sourceSets {
+    jdk9main {
+        java {
+            srcDirs = jdk9MainDirs
+        }
+        compileClasspath += sourceSets.main.compileClasspath + sourceSets.main.output.classesDirs
+    }
+    jdk9test {
+        java {
+            srcDirs = jdk9TestDirs
+        }
+        compileClasspath += sourceSets.test.compileClasspath + sourceSets.jdk9main.output.classesDirs
+        runtimeClasspath += sourceSets.test.runtimeClasspath
+    }
+    jdk16test {
+        java {
+            srcDirs = jdk16TestDirs
+        }
+        compileClasspath += sourceSets.test.compileClasspath + sourceSets.jdk9main.output.classesDirs
+        runtimeClasspath += sourceSets.test.runtimeClasspath
+    }
+}
+
+dependencies {
+    jdk9mainImplementation sourceSets.main.output
+    jdk9testImplementation sourceSets.test.output
+    jdk9testImplementation sourceSets.test.compileClasspath
+    jdk9testImplementation sourceSets.jdk9main.output
+    jdk16testImplementation sourceSets.test.output
+    jdk16testImplementation sourceSets.test.compileClasspath
+
+    runtimeOnly sourceSets.jdk9main.output
+}
+
+compileJdk9mainJava {
+    dependsOn(compileJava)
+    ext.minimumJavaVersion = JavaVersion.VERSION_1_9
+
+    destinationDirectory.set(compileJava.destinationDirectory.get())
+}
+javadoc.dependsOn(compileJdk9mainJava)
+spotbugsMain.dependsOn(compileJdk9mainJava)
+compileTestJava.dependsOn(compileJdk9mainJava)
+
+compileJdk9testJava.with {
+    ext.minimumJavaVersion = JavaVersion.VERSION_1_9
+}
+
+compileJdk16testJava.with {
+    ext.minimumJavaVersion = JavaVersion.VERSION_16
+}
+
+task jdk9Test(type: Test) {
+    ext.minimumJavaVersion = JavaVersion.VERSION_1_9
+
+    testClassesDirs = sourceSets.jdk9test.output.classesDirs
+    classpath = sourceSets.jdk9test.runtimeClasspath
+}
+
+task jdk16Test(type: Test) {
+    ext.minimumJavaVersion = JavaVersion.VERSION_16
+
+    testClassesDirs = sourceSets.jdk16test.output.classesDirs
+    classpath = sourceSets.jdk16test.runtimeClasspath
+}
+
+assemble.dependsOn compileJdk9mainJava
+
+test.finalizedBy(jdk9Test, jdk16Test)
+
+[spotbugsJdk9test, spotbugsJdk16test]*.enabled = false

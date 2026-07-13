@@ -1,0 +1,18 @@
+plugins {
+    id 'archunit.java-examples-conventions'
+}
+
+ext.moduleName = 'com.tngtech.archunit.example.junit4'
+
+dependencies {
+    testImplementation project(path: ':archunit-junit4')
+    testImplementation project(path: ':archunit-example:example-plain')
+}
+
+test {
+    useJUnit {
+        if (!project.hasProperty('example')) {
+            excludeCategories 'com.tngtech.archunit.exampletest.junit4.Example'
+        }
+    }
+}

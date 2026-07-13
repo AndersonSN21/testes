@@ -1,0 +1,29 @@
+plugins {
+    id 'archunit.java-conventions'
+}
+
+gradle.projectsEvaluated {
+    compileTestJava.dependsOn(rootProject.getTasksByName('finishArchive', true))
+}
+
+archUnitTest {
+    providesTestJar = true
+}
+
+rootProject.ext.archUnitExamplesMainDependencies = [
+        exampleLibs.jodaTime,
+        exampleLibs.javaxAnnotationApi,
+        exampleLibs.jakartaInject,
+        exampleLibs.jakartaAnnotations,
+        exampleLibs.springBeans,
+        exampleLibs.guice,
+        exampleLibs.geronimoEjb,
+        exampleLibs.geronimoJpa
+]
+
+dependencies {
+    // `api` dependencies so we can access them within `archunit-integration-test`
+    archUnitExamplesMainDependencies.each { api it }
+
+    testImplementation project(path: ':archunit')
+}

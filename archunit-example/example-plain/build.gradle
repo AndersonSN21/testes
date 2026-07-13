@@ -1,0 +1,21 @@
+plugins {
+    id 'archunit.java-examples-conventions'
+}
+
+ext.moduleName = 'com.tngtech.archunit.example.plain'
+
+dependencies {
+    testImplementation project(path: ':archunit')
+
+    // we still use JUnit 4 as the test runner, but we don't use JUnit 4 support within this project
+    // so tests could well be run using TestNG, etc.
+    testImplementation libs.junit4
+}
+
+test {
+    useJUnitPlatform {
+        if (!project.hasProperty('example')) {
+            excludeTags('com.tngtech.archunit.exampletest.Example')
+        }
+    }
+}

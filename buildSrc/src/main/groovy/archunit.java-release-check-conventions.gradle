@@ -1,0 +1,97 @@
+import groovy.xml.XmlSlurper
+
+import java.nio.file.Files
+import java.util.jar.JarFile
+
+plugins {
+    id 'archunit.java-artifact-check-conventions'
+}
+
+task ensureReleaseCheckUpToDate {
+    doFirst {
+        def mavenProject = new XmlSlurper().parseText(getExpectedPomFileContent())
+        def releaseCheckDependencies = mavenProject.dependencies.dependency
+                .findAll { it.groupId != 'com.tngtech.archunit' }
+                .collect {
+                    [groupId: it.groupId.toString(), artifactId: it.artifactId.toString(), version: it.version.toString()]
+                }
+
+        releaseCheckDependencies.each { releaseCheckDependency ->
+            VersionCatalog versionCatalog = versionCatalogs.named("libs")
+            def dependencies = versionCatalog.libraryAliases.collect { versionCatalog.findLibrary(it).get().get() }
+            def matchingProjectDependency = dependencies.find {
+                it.group == releaseCheckDependency.groupId && it.name == releaseCheckDependency.artifactId
+            }
+            assert matchingProjectDependency != null:
+                    "No project dependency was found for expected release dependency ${releaseCheckDependency}"
+            assert matchingProjectDependency.version == releaseCheckDependency.version:
+                    "Release check dependency version ${releaseCheckDependency} doesn't match " +
+                            "project dependency version ${matchingProjectDependency}"
+        }
+    }
+}
+check.dependsOn(ensureReleaseCheckUpToDate)
+
+ext.getExpectedPomFileContent = {
+    getClass().getResourceAsStream("release_check/${project.name}.pom").text.replace('${archunit.version}', version).stripIndent()
+}
+
+task checkUploadedArtifacts {
+    doLast {
+        def getArtifact = { String artifactId, String fullEnding ->
+            def repositoryUrl = 'https://central.sonatype.com/api/v1/publisher/deployments/download'
+            def artifactUrl = "$repositoryUrl/com/tngtech/archunit/$artifactId/$version/$artifactId-$version$fullEnding"
+            def connection = new URL(artifactUrl).openConnection()
+            def token = (project.getProperty('sonatypeUsername') + ':' + project.getProperty('sonatypePassword')).bytes.encodeBase64()
+            connection.setRequestProperty("Authorization", "Bearer $token")
+            return connection.inputStream
+        }
+
+        def getUploadedFile = { String artifactId, String ending, String suffix ->
+            def fullEnding = (!suffix.isEmpty() ? "-${suffix}" : '') + ".${ending}"
+            def tempDir = Files.createTempDirectory('release-check').toFile()
+            File result = new File(tempDir, "${artifactId}${fullEnding}")
+            result.bytes = getArtifact(artifactId, fullEnding).bytes
+            result
+        }
+
+        def getUploadedPomFileContent = {
+            getArtifact(project.name, ".pom").text.stripIndent()
+        }
+
+        def checkPom = {
+            println "Verifying correct POM of ${project.name}"
+
+            String actual = getUploadedPomFileContent()
+            String expected = getExpectedPomFileContent()
+            if (actual.replaceAll("\\s", "") != expected.replaceAll("\\s", "")) {
+                throw new AssertionError("""POM of artifact '${project.name}' does not match:
+--------
+Actual: 
+${actual}
+--------
+Expected:
+${expected}
+--------
+""")
+            }
+        }
+
+        def checkSourcesExist = {
+            assert getUploadedFile(project.name, 'jar', 'sources') != null
+        }
+
+        def checkJavadocExists = {
+            assert getUploadedFile(project.name, 'jar', 'javadoc') != null
+        }
+
+        checkPom()
+        checkSourcesExist()
+        checkJavadocExists()
+
+        JarFile jarFile = new JarFile(getUploadedFile(project.name, 'jar', ''))
+        checkArtifactContent(jarFile)
+    }
+}
+rootProject.closeSonatypeStagingRepository.finalizedBy(checkUploadedArtifacts)
+rootProject.releaseSonatypeStagingRepository.dependsOn(checkUploadedArtifacts)
