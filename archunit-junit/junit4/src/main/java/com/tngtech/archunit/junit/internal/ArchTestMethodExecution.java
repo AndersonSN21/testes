@@ -38,8 +38,8 @@ class ArchTestMethodExecution extends ArchTestExecution {
         try {
             executeTestMethod(classes);
             return new PositiveResult();
-        } catch (Throwable failure) {
-            return new NegativeResult(describeSelf(), failure);
+        } catch (Exception exception) {
+            return new NegativeResult(describeSelf(), exception);
         }
     }
 
