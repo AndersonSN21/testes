@@ -59,7 +59,7 @@ public final class ReferencedClassObject implements HasType, HasOwner<JavaCodeUn
 
     @PublicAPI(usage = ACCESS)
     public JavaClass getValue() {
-        return value;
+        return getRawType();
     }
 
     @PublicAPI(usage = ACCESS)
